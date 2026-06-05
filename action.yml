@@ -1,0 +1,57 @@
+name: 'AI Architecture Scanner'
+description: 'Reviews AI API usage on every PR. Shows cost delta vs base branch, detects model misuse, flags missing retry logic, and identifies caching opportunities.'
+author: 'AI Architecture Scanner'
+
+branding:
+  icon: 'cpu'
+  color: 'purple'
+
+inputs:
+  path:
+    description: 'Directory to scan (relative to repo root).'
+    required: false
+    default: '.'
+
+  threshold:
+    description: 'Fail if estimated monthly AI cost exceeds this USD amount.'
+    required: false
+    default: ''
+
+  post_pr_comment:
+    description: 'Post a summary comment on pull requests.'
+    required: false
+    default: 'true'
+
+  github_token:
+    description: 'GitHub token for posting PR comments.'
+    required: false
+    default: ${{ github.token }}
+
+  fail_on_warn:
+    description: 'Fail (block merge) if any NEW WARN-level findings are introduced by this PR.'
+    required: false
+    default: 'false'
+
+outputs:
+  monthly_cost:
+    description: 'Estimated monthly AI cost in USD (current branch)'
+  warn_count:
+    description: 'Total WARN-level findings in current branch'
+  new_warn_count:
+    description: 'New WARN-level findings introduced by this PR (vs base branch)'
+  findings_count:
+    description: 'Total findings count'
+  threshold_breached:
+    description: 'true if monthly cost exceeds threshold'
+  report_path:
+    description: 'Path to the full text report'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.path }}
+    - ${{ inputs.threshold }}
+    - ${{ inputs.post_pr_comment }}
+    - ${{ inputs.github_token }}
+    - ${{ inputs.fail_on_warn }}

@@ -1,0 +1,40 @@
+name: AI Architecture Scan
+
+on:
+  # Run on every PR targeting these branches — shows cost DELTA
+  pull_request:
+    branches: [main, master, develop, 'release/**']
+
+  # Run on push to base branches — saves baseline for future PR diffs
+  push:
+    branches: [main, master, develop, 'release/**']
+
+jobs:
+  ai-scan:
+    name: AI Architecture Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write    # required for posting PR comments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: AI Architecture Scan
+        id: ai-scan
+        uses: kavyarani7/ai-arch-scanner@v1    # ← replace with your repo
+        with:
+          path: '.'
+          threshold: '500'                    # fail if monthly cost > $500
+          post_pr_comment: 'true'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_warn: 'false'               # set true to block PRs with new WARNs
+
+      # Optional: use outputs in downstream steps
+      - name: Summary
+        if: always()
+        run: |
+          echo "Monthly AI cost : ${{ steps.ai-scan.outputs.monthly_cost }}"
+          echo "New warnings    : ${{ steps.ai-scan.outputs.new_warn_count }}"
+          echo "Threshold breach: ${{ steps.ai-scan.outputs.threshold_breached }}"

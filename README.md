@@ -49,7 +49,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: your-org/ai-arch-scanner@v1
+      - uses: kavyarani7/ai-arch-scanner@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -109,7 +109,7 @@ That's it. The action will comment on every PR with a summary of AI usage change
 
 ```bash
 # Clone the scanner
-git clone https://github.com/your-org/ai-arch-scanner
+git clone https://github.com/kavyarani7/ai-arch-scanner
 cd ai-arch-scanner
 
 # Scan any repo
