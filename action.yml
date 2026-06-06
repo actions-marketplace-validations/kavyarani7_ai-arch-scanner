@@ -1,5 +1,5 @@
 name: 'AI Architecture Scanner'
-description: 'Reviews AI API usage on every PR. Shows cost delta vs base branch, detects model misuse, flags missing retry logic, and identifies caching opportunities.'
+description: 'Scans AI API usage on every PR. Shows cost delta, detects model misuse, and flags costly patterns before they merge.'
 author: 'AI Architecture Scanner'
 
 branding:
