@@ -40,13 +40,15 @@ name: AI Architecture Scan
 on:
   pull_request:
     branches: [main, master]
+  push:
+    branches: [main, master]   # required — saves the baseline after each merge
 
 jobs:
   ai-scan:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write
+      contents: write          # required — saves baseline to ai-arch-scanner-cache branch
+      pull-requests: write     # required — posts comment on PRs
     steps:
       - uses: actions/checkout@v4
       - uses: kavyarani7/ai-arch-scanner@v1
@@ -54,7 +56,14 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That's it. The action will comment on every PR with a summary of AI usage changes.
+**First-time setup — two steps:**
+
+1. Add the workflow file above and push it to `main`.
+2. The first push run establishes the baseline. After that, every PR will show a cost delta vs that baseline.
+
+> **Cost delta won't appear on the very first PR** — it appears from the second PR onwards once a baseline exists on `main`.
+
+> The action creates an `ai-arch-scanner-cache` branch in your repo to store baselines. This branch is managed automatically — you don't need to touch it.
 
 ---
 
