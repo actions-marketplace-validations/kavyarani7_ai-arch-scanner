@@ -7,6 +7,7 @@ THRESHOLD="${2:-}"
 POST_COMMENT="${3:-true}"
 GITHUB_TOKEN="${4:-}"
 FAIL_ON_WARN="${5:-false}"
+export GITHUB_TOKEN
 
 # ─── PATHS ────────────────────────────────────────────────────────────────
 REPORT_PATH="/tmp/ai-scan-report.txt"
