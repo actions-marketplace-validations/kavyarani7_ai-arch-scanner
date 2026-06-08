@@ -2,240 +2,191 @@
 
 /**
  * cache.js
- * Reads and writes scan baselines using the GitHub Actions Cache API.
- * No npm packages — pure Node http/https built-ins.
+ * Stores and retrieves scan baselines using the GitHub Contents API
+ * (api.github.com) instead of the internal Actions cache service, which is
+ * unreachable from inside Docker container actions.
  *
- * The Actions cache API is available inside any running Action via:
- *   ACTIONS_CACHE_URL  — the cache service base URL
- *   ACTIONS_RUNTIME_TOKEN — the auth token
+ * Baseline files are stored on a dedicated orphan-like branch:
+ *   branch: ai-arch-scanner-cache
+ *   path:   baselines/{safe-branch-name}.json
  *
- * Cache key format: ai-arch-scanner-baseline-{branch}
- * e.g. ai-arch-scanner-baseline-main
+ * Requires: GITHUB_TOKEN, GITHUB_REPOSITORY (both set automatically by Actions)
  *
  * Usage:
  *   node cache.js read  <branch> <output-path>
  *   node cache.js write <branch> <input-path>
+ *
+ * All errors are non-fatal (exit 0).
  */
 
-const fs     = require('fs');
-const path   = require('path');
-const https  = require('https');
-const http   = require('http');
-const os     = require('os');
-const crypto = require('crypto');
+const fs    = require('fs');
+const https = require('https');
 
-// Cache API requires version to be a SHA256 hash (64 hex chars).
-const CACHE_VERSION = crypto.createHash('sha256').update('ai-arch-scanner-v1').digest('hex');
+const CACHE_BRANCH = 'ai-arch-scanner-cache';
 
-function cacheKey(branch) {
-  // Sanitise branch name for use as cache key
-  const safe = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
-  return `ai-arch-scanner-baseline-${safe}-${CACHE_VERSION}`;
+function safeName(branch) {
+  return branch.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
-function getEnv() {
-  const cacheUrl = process.env.ACTIONS_CACHE_URL;
-  const token    = process.env.ACTIONS_RUNTIME_TOKEN;
-
-  if (!cacheUrl || !token) {
-    return null; // Not running inside GitHub Actions — cache unavailable
-  }
-
-  return { cacheUrl: cacheUrl.replace(/\/$/, ''), token };
-}
-
-// Simple promise-based HTTP request
-function request(method, url, headers = {}, body = null) {
+function apiRequest(method, path, token, body = null) {
   return new Promise((resolve, reject) => {
-    const parsed  = new URL(url);
-    const isHttps = parsed.protocol === 'https:';
-    const mod     = isHttps ? https : http;
+    let bodyBuf = null;
+    if (body !== null) {
+      bodyBuf = Buffer.from(JSON.stringify(body), 'utf8');
+    }
 
     const options = {
-      hostname: parsed.hostname,
-      port:     parsed.port || (isHttps ? 443 : 80),
-      path:     parsed.pathname + parsed.search,
+      hostname: 'api.github.com',
+      path,
       method,
       headers: {
-        'Accept': 'application/json;api-version=6.0-preview.1',
-        ...headers,
+        'Authorization':  `Bearer ${token}`,
+        'Accept':         'application/vnd.github.v3+json',
+        'User-Agent':     'ai-arch-scanner',
+        ...(bodyBuf ? {
+          'Content-Type':   'application/json',
+          'Content-Length': bodyBuf.length,
+        } : {}),
       },
     };
 
-    let bodyBuf = null;
-    if (body !== null) {
-      if (Buffer.isBuffer(body)) {
-        bodyBuf = body;
-      } else if (typeof body === 'string') {
-        bodyBuf = Buffer.from(body, 'utf8');
-      } else {
-        bodyBuf = Buffer.from(JSON.stringify(body), 'utf8');
-      }
-      // Only set defaults if caller didn't supply them
-      if (!options.headers['Content-Type'])   options.headers['Content-Type']   = 'application/json';
-      if (!options.headers['Content-Length']) options.headers['Content-Length'] = bodyBuf.length;
-    }
-
-    const req = mod.request(options, (res) => {
+    const req = https.request(options, res => {
       const chunks = [];
-      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
     });
-
     req.on('error', reject);
     if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
 }
 
-// ─── READ BASELINE FROM CACHE ─────────────────────────────────────────────
-async function readBaseline(branch, outputPath) {
-  const env = getEnv();
+async function ensureCacheBranch(repo, token) {
+  // Check if the cache branch already exists
+  const check = await apiRequest('GET', `/repos/${repo}/git/refs/heads/${CACHE_BRANCH}`, token);
+  if (check.status === 200) return true;
 
-  if (!env) {
-    console.log('[cache] Not in GitHub Actions environment — skipping cache read.');
-    process.exit(0); // Not an error — just no cache available
+  // Need a SHA to point the new branch at — use GITHUB_SHA (current push commit)
+  const sha = process.env.GITHUB_SHA;
+  if (!sha) {
+    console.log('[cache] GITHUB_SHA not available — cannot create cache branch.');
+    return false;
   }
 
-  const key = cacheKey(branch);
-  console.log(`[cache] Reading baseline for branch: ${branch}`);
-  console.log(`[cache] Cache key: ${key}`);
+  const create = await apiRequest('POST', `/repos/${repo}/git/refs`, token, {
+    ref: `refs/heads/${CACHE_BRANCH}`,
+    sha,
+  });
 
-  try {
-    // Step 1: Look up the cache entry
-    const lookupUrl = `${env.cacheUrl}/_apis/artifactcache/cache?keys=${encodeURIComponent(key)}&version=${CACHE_VERSION}`;
-    const lookup = await request('GET', lookupUrl, {
-      'Authorization': `Bearer ${env.token}`,
-    });
+  if (create.status === 201 || create.status === 422) return true; // 422 = already exists race
 
-    if (lookup.status === 204 || lookup.status === 404) {
-      console.log('[cache] No baseline found — this is the first scan on this branch.');
-      process.exit(0);
-    }
-
-    if (lookup.status !== 200) {
-      console.log(`[cache] Cache lookup returned ${lookup.status} — skipping.`);
-      process.exit(0);
-    }
-
-    const entry = JSON.parse(lookup.body.toString('utf8'));
-    if (!entry.archiveLocation) {
-      console.log('[cache] No archive location in response — skipping.');
-      process.exit(0);
-    }
-
-    // Step 2: Download the cached file
-    console.log('[cache] Baseline found. Downloading...');
-    const download = await request('GET', entry.archiveLocation, {});
-
-    if (download.status !== 200) {
-      console.log(`[cache] Download returned ${download.status} — skipping.`);
-      process.exit(0);
-    }
-
-    fs.writeFileSync(outputPath, download.body);
-    console.log(`[cache] Baseline written to: ${outputPath}`);
-    process.exit(0);
-
-  } catch (e) {
-    // Cache errors are non-fatal — degrade gracefully to no-baseline mode
-    console.log(`[cache] Read error (non-fatal): ${e.message}`);
-    process.exit(0);
-  }
+  console.log(`[cache] Failed to create cache branch (${create.status}): ${create.body.slice(0, 200)}`);
+  return false;
 }
 
-// ─── WRITE BASELINE TO CACHE ──────────────────────────────────────────────
+async function getExistingFileSha(repo, token, filePath) {
+  const res = await apiRequest(
+    'GET',
+    `/repos/${repo}/contents/${filePath}?ref=${CACHE_BRANCH}`,
+    token,
+  );
+  if (res.status !== 200) return null;
+  try { return JSON.parse(res.body).sha || null; } catch { return null; }
+}
+
+// ─── WRITE ────────────────────────────────────────────────────────────────────
 async function writeBaseline(branch, inputPath) {
-  const env = getEnv();
+  const token = process.env.GITHUB_TOKEN;
+  const repo  = process.env.GITHUB_REPOSITORY;
 
-  if (!env) {
-    console.log('[cache] Not in GitHub Actions environment — skipping cache write.');
-    process.exit(0);
+  if (!token || !repo) {
+    console.log('[cache] GITHUB_TOKEN or GITHUB_REPOSITORY not set — skipping write.');
+    return;
   }
-
   if (!fs.existsSync(inputPath)) {
-    console.log(`[cache] Input file not found: ${inputPath}`);
-    process.exit(0);
+    console.log(`[cache] Input file not found: ${inputPath} — skipping write.`);
+    return;
   }
 
-  const key     = cacheKey(branch);
-  const content = fs.readFileSync(inputPath, 'utf8');
+  const filePath = `baselines/${safeName(branch)}.json`;
+  const content  = fs.readFileSync(inputPath, 'utf8');
+  const encoded  = Buffer.from(content, 'utf8').toString('base64');
 
-  console.log(`[cache] Writing baseline for branch: ${branch}`);
-  console.log(`[cache] Cache key: ${key}`);
+  console.log(`[cache] Writing baseline → ${CACHE_BRANCH}/${filePath}`);
 
-  try {
-    // Step 1: Reserve a cache entry
-    const reserveUrl = `${env.cacheUrl}/_apis/artifactcache/caches`;
-    const reserve = await request('POST', reserveUrl, {
-      'Authorization': `Bearer ${env.token}`,
-    }, { key, version: CACHE_VERSION });
+  const ok = await ensureCacheBranch(repo, token);
+  if (!ok) return;
 
-    if (reserve.status === 409) {
-      // Actions cache is immutable per key within a workflow run; skip silently.
-      console.log('[cache] Cache entry already exists for this key — skipping write.');
-      process.exit(0);
-    } else if (reserve.status !== 201) {
-      console.log(`[cache] Reserve returned ${reserve.status} — skipping write.`);
-      console.log(`[cache] Reserve response body: ${reserve.body.toString('utf8').slice(0, 500)}`);
-      process.exit(0);
-    }
+  const existingSha = await getExistingFileSha(repo, token, filePath);
 
-    const reserveBody = JSON.parse(reserve.body.toString('utf8'));
-    const cacheId     = reserveBody.cacheId;
+  const body = {
+    message: `chore: update ai-arch-scanner baseline for ${branch}`,
+    content: encoded,
+    branch:  CACHE_BRANCH,
+  };
+  if (existingSha) body.sha = existingSha;
 
-    if (!cacheId) {
-      console.log('[cache] No cacheId returned — skipping write.');
-      process.exit(0);
-    }
+  const res = await apiRequest('PUT', `/repos/${repo}/contents/${filePath}`, token, body);
 
-    // Step 2: Upload the content
-    const contentBuf = Buffer.from(content, 'utf8');
-    const uploadUrl  = `${env.cacheUrl}/_apis/artifactcache/caches/${cacheId}`;
-
-    const upload = await request('PATCH', uploadUrl, {
-      'Authorization':  `Bearer ${env.token}`,
-      'Content-Type':   'application/octet-stream',
-      'Content-Range':  `bytes 0-${contentBuf.length - 1}/*`,
-      'Content-Length': contentBuf.length,
-    }, contentBuf);
-
-    if (upload.status !== 204) {
-      console.log(`[cache] Upload returned ${upload.status} — may have failed.`);
-      process.exit(0);
-    }
-
-    // Step 3: Commit the cache entry
-    const commitUrl = `${env.cacheUrl}/_apis/artifactcache/caches/${cacheId}`;
-    const commit = await request('POST', commitUrl, {
-      'Authorization': `Bearer ${env.token}`,
-    }, { size: contentBuf.length });
-
-    if (commit.status === 204) {
-      console.log(`[cache] ✓ Baseline cached successfully (${contentBuf.length} bytes).`);
-    } else {
-      console.log(`[cache] Commit returned ${commit.status}.`);
-    }
-
-    process.exit(0);
-
-  } catch (e) {
-    // Cache write errors are non-fatal
-    console.log(`[cache] Write error (non-fatal): ${e.message}`);
-    process.exit(0);
+  if (res.status === 200 || res.status === 201) {
+    console.log(`[cache] ✓ Baseline saved (${content.length} bytes).`);
+  } else {
+    console.log(`[cache] Write failed (${res.status}): ${res.body.slice(0, 300)}`);
   }
 }
 
-// ─── CLI ──────────────────────────────────────────────────────────────────
+// ─── READ ─────────────────────────────────────────────────────────────────────
+async function readBaseline(branch, outputPath) {
+  const token = process.env.GITHUB_TOKEN;
+  const repo  = process.env.GITHUB_REPOSITORY;
+
+  if (!token || !repo) {
+    console.log('[cache] GITHUB_TOKEN or GITHUB_REPOSITORY not set — skipping read.');
+    return;
+  }
+
+  const filePath = `baselines/${safeName(branch)}.json`;
+  console.log(`[cache] Reading baseline ← ${CACHE_BRANCH}/${filePath}`);
+
+  const res = await apiRequest(
+    'GET',
+    `/repos/${repo}/contents/${filePath}?ref=${CACHE_BRANCH}`,
+    token,
+  );
+
+  if (res.status === 404) {
+    console.log('[cache] No baseline found — first scan on this branch.');
+    return;
+  }
+  if (res.status !== 200) {
+    console.log(`[cache] Read failed (${res.status}): ${res.body.slice(0, 200)}`);
+    return;
+  }
+
+  const data    = JSON.parse(res.body);
+  const decoded = Buffer.from(data.content, 'base64').toString('utf8');
+  fs.writeFileSync(outputPath, decoded, 'utf8');
+  console.log(`[cache] ✓ Baseline loaded (${decoded.length} bytes).`);
+}
+
+// ─── CLI ──────────────────────────────────────────────────────────────────────
 const [,, command, branch, filePath] = process.argv;
 
-if (command === 'read' && branch && filePath) {
-  readBaseline(branch, filePath);
-} else if (command === 'write' && branch && filePath) {
-  writeBaseline(branch, filePath);
-} else {
-  console.error('Usage:');
-  console.error('  node cache.js read  <branch> <output-path>');
-  console.error('  node cache.js write <branch> <input-path>');
-  process.exit(1);
+if (!command || !branch || !filePath) {
+  console.error('Usage: node cache.js <read|write> <branch> <file>');
+  process.exit(0);
 }
+
+(async () => {
+  try {
+    if (command === 'write')     await writeBaseline(branch, filePath);
+    else if (command === 'read') await readBaseline(branch, filePath);
+    else console.log(`[cache] Unknown command: ${command}`);
+  } catch (e) {
+    console.log(`[cache] Error (non-fatal): ${e.message}`);
+  }
+  process.exit(0);
+})();
