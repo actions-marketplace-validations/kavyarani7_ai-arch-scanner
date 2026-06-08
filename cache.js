@@ -60,20 +60,28 @@ function request(method, url, headers = {}, body = null) {
       },
     };
 
-    if (body) {
-      const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
-      options.headers['Content-Type']   = 'application/json';
-      options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    let bodyBuf = null;
+    if (body !== null) {
+      if (Buffer.isBuffer(body)) {
+        bodyBuf = body;
+      } else if (typeof body === 'string') {
+        bodyBuf = Buffer.from(body, 'utf8');
+      } else {
+        bodyBuf = Buffer.from(JSON.stringify(body), 'utf8');
+      }
+      // Only set defaults if caller didn't supply them
+      if (!options.headers['Content-Type'])   options.headers['Content-Type']   = 'application/json';
+      if (!options.headers['Content-Length']) options.headers['Content-Length'] = bodyBuf.length;
     }
 
     const req = mod.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+      const chunks = [];
+      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
     });
 
     req.on('error', reject);
-    if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
+    if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
 }
@@ -108,7 +116,7 @@ async function readBaseline(branch, outputPath) {
       process.exit(0);
     }
 
-    const entry = JSON.parse(lookup.body);
+    const entry = JSON.parse(lookup.body.toString('utf8'));
     if (!entry.archiveLocation) {
       console.log('[cache] No archive location in response — skipping.');
       process.exit(0);
@@ -123,7 +131,7 @@ async function readBaseline(branch, outputPath) {
       process.exit(0);
     }
 
-    fs.writeFileSync(outputPath, download.body, 'utf8');
+    fs.writeFileSync(outputPath, download.body);
     console.log(`[cache] Baseline written to: ${outputPath}`);
     process.exit(0);
 
@@ -162,13 +170,15 @@ async function writeBaseline(branch, inputPath) {
     }, { key, version: CACHE_VERSION });
 
     if (reserve.status === 409) {
-      console.log('[cache] Cache entry already exists — will update.');
+      // Actions cache is immutable per key within a workflow run; skip silently.
+      console.log('[cache] Cache entry already exists for this key — skipping write.');
+      process.exit(0);
     } else if (reserve.status !== 201) {
       console.log(`[cache] Reserve returned ${reserve.status} — skipping write.`);
       process.exit(0);
     }
 
-    const reserveBody = JSON.parse(reserve.body);
+    const reserveBody = JSON.parse(reserve.body.toString('utf8'));
     const cacheId     = reserveBody.cacheId;
 
     if (!cacheId) {
@@ -185,7 +195,7 @@ async function writeBaseline(branch, inputPath) {
       'Content-Type':   'application/octet-stream',
       'Content-Range':  `bytes 0-${contentBuf.length - 1}/*`,
       'Content-Length': contentBuf.length,
-    }, content);
+    }, contentBuf);
 
     if (upload.status !== 204) {
       console.log(`[cache] Upload returned ${upload.status} — may have failed.`);
