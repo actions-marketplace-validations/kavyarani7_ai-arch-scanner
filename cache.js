@@ -177,6 +177,7 @@ async function writeBaseline(branch, inputPath) {
       process.exit(0);
     } else if (reserve.status !== 201) {
       console.log(`[cache] Reserve returned ${reserve.status} — skipping write.`);
+      console.log(`[cache] Reserve response body: ${reserve.body.toString('utf8').slice(0, 500)}`);
       process.exit(0);
     }
 
