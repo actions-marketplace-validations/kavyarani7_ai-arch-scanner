@@ -17,13 +17,15 @@
  *   node cache.js write <branch> <input-path>
  */
 
-const fs    = require('fs');
-const path  = require('path');
-const https = require('https');
-const http  = require('http');
-const os    = require('os');
+const fs     = require('fs');
+const path   = require('path');
+const https  = require('https');
+const http   = require('http');
+const os     = require('os');
+const crypto = require('crypto');
 
-const CACHE_VERSION = 'v1';
+// Cache API requires version to be a SHA256 hash (64 hex chars).
+const CACHE_VERSION = crypto.createHash('sha256').update('ai-arch-scanner-v1').digest('hex');
 
 function cacheKey(branch) {
   // Sanitise branch name for use as cache key
