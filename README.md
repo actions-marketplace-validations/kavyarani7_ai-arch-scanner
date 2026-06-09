@@ -1,6 +1,6 @@
 # AI Architecture Scanner
 
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-AI%20Architecture%20Scanner-blue?logo=github)](https://github.com/kavyarani7/ai-arch-scanner)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-AI%20Architecture%20Scanner-blue?logo=github)](https://github.com/marketplace/actions/ai-architecture-scanner)
 
 > Catch expensive AI patterns before they merge. SonarQube for AI cost & efficiency.
 
