@@ -198,6 +198,14 @@ That's expected — it's where the action stores baseline JSON files. It's manag
 
 ---
 
+## Limitations
+
+**Static analysis only.** The scanner reads your code — it does not make API calls or measure runtime behaviour. This means:
+
+- **Prompt content is not analysed.** Longer prompts cost more at runtime, but the scanner cannot know how long your prompts will be (they often depend on user input or database content). It estimates cost from `model` and `max_tokens` only.
+- **Actual token usage is not measured.** The delta shown on PRs reflects code-level changes (new API calls, model changes, `max_tokens` changes) — not real token counts from live traffic.
+- **Runtime cost increases are not detected.** If your AI spend goes up because of more traffic or longer dynamic prompts, the scanner will not flag that. That requires runtime monitoring in your live application.
+
 ## Roadmap
 
 - [ ] Python support
